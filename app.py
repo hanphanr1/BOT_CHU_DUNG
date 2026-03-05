@@ -7,7 +7,7 @@ import json
 import re
 import secrets
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from contextlib import contextmanager
 
@@ -28,6 +28,23 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ================= TIMEZONE =================
+# Múi giờ Việt Nam (UTC+7)
+VIETNAM_TZ = timezone(timedelta(hours=7))
+
+def get_vietnam_time():
+    """Lấy thời gian hiện tại theo múi giờ Việt Nam"""
+    return datetime.now(VIETNAM_TZ)
+
+def to_vietnam_time(dt: datetime):
+    """Chuyển đổi datetime sang múi giờ Việt Nam"""
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        # Naive datetime - giả định là UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(VIETNAM_TZ)
 
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -1034,12 +1051,16 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
         unit_price = amount // quantity if quantity > 0 else amount
         created_at = order.get('created_at', '')
         if created_at:
-            if isinstance(created_at, str):
-                try:
+            try:
+                if isinstance(created_at, str):
                     dt = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
-                    created_at = dt.strftime('%H:%M:%S %d/%m/%Y')
-                except:
-                    created_at = str(created_at)
+                else:
+                    dt = created_at
+                # Chuyển sang múi giờ Việt Nam
+                dt_vn = to_vietnam_time(dt)
+                created_at = dt_vn.strftime('%H:%M:%S %d/%m/%Y')
+            except:
+                created_at = str(created_at)
 
         for admin_id in ADMIN_IDS:
             send_telegram_sync(
