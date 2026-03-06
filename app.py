@@ -90,11 +90,25 @@ def _ensure_contact_seller_column(db):
     except Exception as e:
         logger.warning("Migration contact_seller: %s", e)
 
+def _ensure_orders_customer_name_column(db):
+    """Thêm cột customer_name (tên thật khách hàng) vào bảng orders nếu DB cũ chưa có."""
+    try:
+        cur = db.cursor()
+        cur.execute("PRAGMA table_info(orders)")
+        cols = [row[1] for row in cur.fetchall()]
+        if cols and 'customer_name' not in cols:
+            cur.execute("ALTER TABLE orders ADD COLUMN customer_name TEXT")
+            db.commit()
+            logger.info("✅ Migration: added customer_name column to orders table")
+    except Exception as e:
+        logger.warning("Migration customer_name: %s", e)
+
 @contextmanager
 def get_db():
     db = sqlite3.connect(DB_PATH, check_same_thread=False)
     db.row_factory = sqlite3.Row
     _ensure_contact_seller_column(db)
+    _ensure_orders_customer_name_column(db)
     try:
         yield db
     finally:
@@ -159,6 +173,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             username TEXT,
+            customer_name TEXT,
             order_code TEXT UNIQUE NOT NULL,
             product_id INTEGER,
             product_name TEXT,
@@ -523,13 +538,14 @@ def get_stock_count(product_id: int = None):
         return cur.fetchone()['count']
 
 # ================= ORDER FUNCTIONS =================
-def create_order(user_id: int, username: str, order_code: str, product_id: int, product_name: str, amount: int, quantity: int = 1):
+def create_order(user_id: int, username: str, order_code: str, product_id: int, product_name: str, amount: int, quantity: int = 1, customer_name: str = None):
+    """customer_name: tên hiển thị thật (first_name + last_name), dùng cho dòng Khách hàng trong thông báo."""
     with get_db() as db:
         cur = db.cursor()
         cur.execute(
-            """INSERT INTO orders (user_id, username, order_code, product_id, product_name, amount, quantity, status) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')""",
-            (user_id, username, order_code, product_id, product_name, amount, quantity)
+            """INSERT INTO orders (user_id, username, order_code, product_id, product_name, amount, quantity, status, customer_name) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)""",
+            (user_id, username, order_code, product_id, product_name, amount, quantity, customer_name or '')
         )
         db.commit()
         return cur.lastrowid
@@ -1012,6 +1028,7 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
         
         quantity = order.get('quantity', 1) or 1
         unit_price = amount // quantity if quantity > 0 else amount
+        customer_display = (order.get('customer_name') or order.get('username') or 'N/A').strip()
         username_display = (order.get('username') or 'N/A').strip()
         if username_display and not username_display.startswith('@'):
             username_display = '@' + username_display
@@ -1044,7 +1061,7 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
                 buyer_caption = (
                     f"🧾 <b>THANH TOÁN THÀNH CÔNG</b>\n\n"
                     f"🆔 Order ID: {order['order_code']}\n"
-                    f"👤 Khách hàng: {order.get('username', 'N/A')}\n"
+                    f"👤 Khách hàng: {customer_display}\n"
                     f"   └ Username: {username_display}\n"
                     f"   └ User ID: {order['user_id']}\n\n"
                     f"📦 Gói: {order.get('product_name', 'N/A')}\n"
@@ -1079,7 +1096,7 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
                     order['user_id'],
                     f"🧾 <b>THANH TOÁN THÀNH CÔNG</b>\n\n"
                     f"🆔 Order ID: {order['order_code']}\n"
-                    f"👤 Khách hàng: {order.get('username', 'N/A')}\n"
+                    f"👤 Khách hàng: {customer_display}\n"
                     f"   └ Username: {username_display}\n"
                     f"   └ User ID: {order['user_id']}\n\n"
                     f"📦 Gói: {order.get('product_name', 'N/A')}\n"
@@ -1096,7 +1113,7 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
                 order['user_id'],
                 f"🧾 <b>THANH TOÁN THÀNH CÔNG</b>\n\n"
                 f"🆔 Order ID: {order['order_code']}\n"
-                f"👤 Khách hàng: {order.get('username', 'N/A')}\n"
+                f"👤 Khách hàng: {customer_display}\n"
                 f"   └ Username: {username_display}\n"
                 f"   └ User ID: {order['user_id']}\n\n"
                 f"📦 Gói: {order.get('product_name', 'N/A')}\n"
@@ -1123,6 +1140,7 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
         else:
             created_at_admin = 'N/A'
         kho_con = get_stock_count(order.get('product_id'))
+        customer_admin = (order.get('customer_name') or order.get('username') or 'N/A').strip()
         username_admin = (order.get('username') or 'N/A').strip()
         if username_admin and not username_admin.startswith('@'):
             username_admin = '@' + username_admin
@@ -1131,7 +1149,7 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
                 admin_id,
                 f"💰 <b>ĐƠN HÀNG THÀNH CÔNG</b>\n\n"
                 f"🆔 Order ID: {order['order_code']}\n"
-                f"👤 Khách hàng: {order.get('username', 'N/A')}\n"
+                f"👤 Khách hàng: {customer_admin}\n"
                 f"   └ Username: {username_admin}\n"
                 f"   └ User ID: {order['user_id']}\n"
                 f"🎁 Gói: {order.get('product_name', 'N/A')}\n"
@@ -2034,6 +2052,7 @@ async def create_order_and_send_payment(user, product, quantity: int, message):
     total_price = product['price'] * quantity
     order_code = f"DH{random.randint(100000, 999999)}"
     
+    customer_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or (user.username or "N/A")
     create_order(
         user_id=user.id,
         username=user.username or user.first_name,
@@ -2041,7 +2060,8 @@ async def create_order_and_send_payment(user, product, quantity: int, message):
         product_id=product['id'],
         product_name=product['name'],
         amount=total_price,
-        quantity=quantity
+        quantity=quantity,
+        customer_name=customer_name
     )
     
     bank_info = get_bank_info()
