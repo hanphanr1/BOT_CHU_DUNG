@@ -1803,23 +1803,26 @@ def build_contact_seller_message(product: dict):
     telegram_url, telegram_display = _telegram_contact_display()
     zalo_link = get_config('zalo_link', os.getenv('ZALO_LINK', ''))
     desc = (product.get('description') or '').strip()
+    name = (product.get('name') or '').strip()
+    # Tên sản phẩm to, rõ — dùng block nổi bật
     text = (
-        f"↑ <b>{product['name']}</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🛍️ <b>{name}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"💰 Giá: {product['price']:,}₫\n"
     )
     if desc:
         text += f"📝 {desc}\n\n"
-    text += (
-        "📞 <b>Liên hệ để mua hàng</b>\n\n"
-        f"💬 Telegram: {telegram_display}\n"
-    )
+    text += "📞 Liên hệ để mua hàng\n\n"
+    if telegram_url:
+        text += f"💬 Telegram: {telegram_display}\n"
     if zalo_link:
-        text += f"📱 Zalo: <a href=\"{zalo_link}\">Nhấn vào đây</a>\n\n"
-    text += "Vui lòng liên hệ trực tiếp để được hỗ trợ!"
+        text += f"📱 Zalo: <a href=\"{zalo_link}\">Nhấn vào đây</a>\n"
+    text += "\nVui lòng liên hệ trực tiếp để được hỗ trợ!"
     buttons = []
     if telegram_url:
         buttons.append([InlineKeyboardButton(text=f"📞 Liên hệ: {telegram_display}", url=telegram_url)])
-    buttons.append([InlineKeyboardButton(text="⬅️ BACK Quay lại danh sách", callback_data="shop")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Quay lại danh sách", callback_data="shop")])
     return text, InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @dp.callback_query(F.data.startswith("contact_prod_"))

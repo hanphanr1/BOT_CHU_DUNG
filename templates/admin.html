@@ -876,10 +876,6 @@
                         <label class="text-gray-600">📞 Liên hệ người bán</label>
                         <input type="checkbox" id="productContactSeller" class="w-5 h-5 rounded border-gray-300 text-primary focus:ring-primary">
                     </div>
-                    <p class="text-sm text-gray-500 -mt-1">
-                        <i class="fas fa-info-circle mr-1"></i>
-                        Bật thì sản phẩm hiển thị "Liên hệ" (không cần kho hàng), địa chỉ lấy từ TELEGRAM_CHANNEL
-                    </p>
                     <button type="submit" class="w-full bg-gradient-to-r from-primary to-secondary text-white py-3 rounded-xl hover:opacity-90 transition">
                         <i class="fas fa-plus mr-2"></i>Thêm sản phẩm
                     </button>
@@ -1225,10 +1221,14 @@
         }
 
         async function loadProductOptions(selectId) {
-            const products = await apiCall('/products');
+            let products = await apiCall('/products');
             const select = document.getElementById(selectId);
             select.innerHTML = '<option value="">Chọn sản phẩm</option>';
             if (products) {
+                // Dropdown kho hàng: không hiển thị sản phẩm liên hệ (không dùng kho)
+                if (selectId === 'stockProduct' || selectId === 'stockProductFilter') {
+                    products = products.filter(p => !p.contact_seller);
+                }
                 products.forEach(p => {
                     select.innerHTML += `<option value="${p.id}">${p.name} - ${formatCurrency(p.price)}</option>`;
                 });
