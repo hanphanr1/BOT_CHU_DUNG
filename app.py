@@ -129,10 +129,16 @@ def init_db():
             description TEXT,
             price INTEGER NOT NULL,
             is_active INTEGER DEFAULT 1,
+            contact_seller INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (category_id) REFERENCES categories(id)
         )
         """)
+        try:
+            cur.execute("ALTER TABLE products ADD COLUMN contact_seller INTEGER DEFAULT 0")
+            logger.info("✅ Added contact_seller column to products table")
+        except Exception:
+            pass
         
         cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (
@@ -373,17 +379,17 @@ def get_product(product_id: int):
         row = cur.fetchone()
         return dict(row) if row else None
 
-def create_product(category_id: int, name: str, price: int, description: str = ""):
+def create_product(category_id: int, name: str, price: int, description: str = "", contact_seller: bool = False):
     with get_db() as db:
         cur = db.cursor()
         cur.execute(
-            "INSERT INTO products (category_id, name, price, description) VALUES (?, ?, ?, ?)",
-            (category_id, name, price, description)
+            "INSERT INTO products (category_id, name, price, description, contact_seller) VALUES (?, ?, ?, ?, ?)",
+            (category_id, name, price, description, 1 if contact_seller else 0)
         )
         db.commit()
         return cur.lastrowid
 
-def update_product(product_id: int, category_id: int = None, name: str = None, price: int = None, description: str = None):
+def update_product(product_id: int, category_id: int = None, name: str = None, price: int = None, description: str = None, contact_seller: bool = None):
     """Cập nhật thông tin sản phẩm"""
     with get_db() as db:
         cur = db.cursor()
@@ -402,6 +408,9 @@ def update_product(product_id: int, category_id: int = None, name: str = None, p
         if description is not None:
             updates.append("description=?")
             params.append(description)
+        if contact_seller is not None:
+            updates.append("contact_seller=?")
+            params.append(1 if contact_seller else 0)
         
         if updates:
             params.append(product_id)
@@ -972,10 +981,29 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
         # GỬI SẢN PHẨM CHO ĐÚNG NGƯỜI TẠO ĐƠN
         logger.info(f"📦 Sending {len(stocks)} products to user {order['user_id']}")
         
-        # Kiểm tra nếu cần gửi file TXT:
-        # - >= 5 sản phẩm HOẶC
-        # - Có bất kỳ content nào > 150 ký tự hoặc > 5 dòng
-        need_txt_file = len(stocks) >= 5
+        # Format thời gian cho người mua
+        created_at_str = order.get('created_at', '')
+        if created_at_str:
+            try:
+                if isinstance(created_at_str, str):
+                    dt = datetime.strptime(created_at_str, '%Y-%m-%d %H:%M:%S')
+                else:
+                    dt = created_at_str
+                dt_vn = to_vietnam_time(dt)
+                created_at_display = dt_vn.strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                created_at_display = str(created_at_str)
+        else:
+            created_at_display = 'N/A'
+        
+        quantity = order.get('quantity', 1) or 1
+        unit_price = amount // quantity if quantity > 0 else amount
+        username_display = (order.get('username') or 'N/A').strip()
+        if username_display and not username_display.startswith('@'):
+            username_display = '@' + username_display
+        
+        # Kiểm tra nếu cần gửi file TXT: từ 2 sản phẩm trở lên HOẶC content dài
+        need_txt_file = len(stocks) >= 2
         if not need_txt_file:
             for s in stocks:
                 content = s.get('content', '')
@@ -999,19 +1027,26 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
                 file_bytes = file_content.encode('utf-8')
                 filename = f"{order['order_code']}_products.txt"
                 
-                caption = (f"🎉 <b>THANH TOÁN THÀNH CÔNG!</b>\n\n"
-                          f"✅ Đơn hàng: <code>{order['order_code']}</code>\n"
-                          f"🛍️ Sản phẩm: {order.get('product_name', 'N/A')}\n"
-                          f"📦 Số lượng: {len(stocks)}\n"
-                          f"💰 Số tiền: {amount:,}đ\n\n"
-                          f"📄 <b>Danh sách sản phẩm trong file đính kèm!</b>\n\n"
-                          f"Cảm ơn bạn đã mua hàng! 🙏")
+                buyer_caption = (
+                    f"🧾 <b>THANH TOÁN THÀNH CÔNG</b>\n\n"
+                    f"🆔 Order ID: {order['order_code']}\n"
+                    f"👤 Khách hàng: {order.get('username', 'N/A')}\n"
+                    f"   └ Username: {username_display}\n"
+                    f"   └ User ID: {order['user_id']}\n\n"
+                    f"📦 Gói: {order.get('product_name', 'N/A')}\n"
+                    f"🔢 Số lượng: {len(stocks)}\n"
+                    f"💵 Đơn giá: {unit_price:,}đ\n"
+                    f"💰 Tổng thanh toán: {amount:,}đ\n"
+                    f"🕒 Thời gian tạo đơn: {created_at_display}\n\n"
+                    f"🧾 <b>SẢN PHẨM:</b> (trong file đính kèm)\n\n"
+                    f"Cảm ơn bạn đã mua hàng! 🙏"
+                )
                 
                 response = requests.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
                     data={
                         "chat_id": order['user_id'],
-                        "caption": caption,
+                        "caption": buyer_caption,
                         "parse_mode": "HTML"
                     },
                     files={"document": (filename, io.BytesIO(file_bytes), "text/plain")}
@@ -1025,56 +1060,71 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
                 
             except Exception as e:
                 logger.error(f"Error sending file: {e}")
-                # Fallback: gửi text thường
                 products_text = "\n".join([f"{i+1}. {s['content']}" for i, s in enumerate(stocks)])
-                send_telegram_sync(order['user_id'], f"🎉 <b>THANH TOÁN THÀNH CÔNG!</b>\n\n📦 Sản phẩm của bạn:\n\n{products_text}")
+                send_telegram_sync(
+                    order['user_id'],
+                    f"🧾 <b>THANH TOÁN THÀNH CÔNG</b>\n\n"
+                    f"🆔 Order ID: {order['order_code']}\n"
+                    f"👤 Khách hàng: {order.get('username', 'N/A')}\n"
+                    f"   └ Username: {username_display}\n"
+                    f"   └ User ID: {order['user_id']}\n\n"
+                    f"📦 Gói: {order.get('product_name', 'N/A')}\n"
+                    f"🔢 Số lượng: {len(stocks)}\n"
+                    f"💵 Đơn giá: {unit_price:,}đ\n"
+                    f"💰 Tổng thanh toán: {amount:,}đ\n"
+                    f"🕒 Thời gian tạo đơn: {created_at_display}\n\n"
+                    f"🧾 <b>SẢN PHẨM:</b>\n{products_text}\n\nCảm ơn bạn đã mua hàng! 🙏"
+                )
         else:
-            # Gửi text bình thường nếu <= 5 sản phẩm
-            products_text = "\n".join([f"{i+1}. <code>{s['content']}</code>" for i, s in enumerate(stocks)])
-            
+            # 1 sản phẩm: gửi text kèm nội dung sản phẩm
+            products_text = "\n".join([s['content'] for s in stocks])
             send_telegram_sync(
                 order['user_id'],
-                f"🎉 <b>THANH TOÁN THÀNH CÔNG!</b>\n\n"
-                f"✅ Đơn hàng: <code>{order['order_code']}</code>\n"
-                f"🛍️ Sản phẩm: {order.get('product_name', 'N/A')}\n"
-                f"📦 Số lượng: {len(stocks)}\n"
-                f"💰 Số tiền: {amount:,}đ\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"📦 <b>SẢN PHẨM CỦA BẠN:</b>\n\n"
-                f"{products_text}\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"Cảm ơn bạn đã mua hàng! 🙏"
-            )
-        
-        # Thông báo admin
-        quantity = order.get('quantity', 1) or 1
-        unit_price = amount // quantity if quantity > 0 else amount
-        created_at = order.get('created_at', '')
-        if created_at:
-            try:
-                if isinstance(created_at, str):
-                    dt = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
-                else:
-                    dt = created_at
-                # Chuyển sang múi giờ Việt Nam
-                dt_vn = to_vietnam_time(dt)
-                created_at = dt_vn.strftime('%H:%M:%S %d/%m/%Y')
-            except:
-                created_at = str(created_at)
-
-        for admin_id in ADMIN_IDS:
-            send_telegram_sync(
-                admin_id,
-                f"💰 <b>ĐƠN HÀNG THÀNH CÔNG!</b>\n\n"
-                f"🆔 Order ID: <code>{order['order_code']}</code>\n"
-                f"👤 <b>Khách hàng:</b>\n"
-                f"   └ Username: @{order.get('username', 'N/A')}\n"
-                f"   └ User ID: <code>{order['user_id']}</code>\n"
+                f"🧾 <b>THANH TOÁN THÀNH CÔNG</b>\n\n"
+                f"🆔 Order ID: {order['order_code']}\n"
+                f"👤 Khách hàng: {order.get('username', 'N/A')}\n"
+                f"   └ Username: {username_display}\n"
+                f"   └ User ID: {order['user_id']}\n\n"
                 f"📦 Gói: {order.get('product_name', 'N/A')}\n"
                 f"🔢 Số lượng: {len(stocks)}\n"
                 f"💵 Đơn giá: {unit_price:,}đ\n"
                 f"💰 Tổng thanh toán: {amount:,}đ\n"
-                f"Thời gian tạo đơn: {created_at}"
+                f"🕒 Thời gian tạo đơn: {created_at_display}\n\n"
+                f"🧾 <b>SẢN PHẨM:</b>\n{products_text}\n\n"
+                f"Cảm ơn bạn đã mua hàng! 🙏"
+            )
+        
+        # Thông báo cho người bán (admin)
+        created_at_admin = order.get('created_at', '')
+        if created_at_admin:
+            try:
+                if isinstance(created_at_admin, str):
+                    dt = datetime.strptime(created_at_admin, '%Y-%m-%d %H:%M:%S')
+                else:
+                    dt = created_at_admin
+                dt_vn = to_vietnam_time(dt)
+                created_at_admin = dt_vn.strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                created_at_admin = str(created_at_admin)
+        else:
+            created_at_admin = 'N/A'
+        kho_con = get_stock_count(order.get('product_id'))
+        username_admin = (order.get('username') or 'N/A').strip()
+        if username_admin and not username_admin.startswith('@'):
+            username_admin = '@' + username_admin
+        for admin_id in ADMIN_IDS:
+            send_telegram_sync(
+                admin_id,
+                f"💰 <b>ĐƠN HÀNG THÀNH CÔNG</b>\n\n"
+                f"🆔 Order ID: {order['order_code']}\n"
+                f"👤 Khách hàng: {order.get('username', 'N/A')}\n"
+                f"   └ Username: {username_admin}\n"
+                f"   └ User ID: {order['user_id']}\n"
+                f"🎁 Gói: {order.get('product_name', 'N/A')}\n"
+                f"🔢 Số lượng mua: {len(stocks)}\n"
+                f"💰 Tổng thanh toán: {amount:,}đ\n"
+                f"📦 Kho còn: {kho_con}\n"
+                f"🕒 Thời gian tạo đơn: {created_at_admin}"
             )
         
         logger.info(f"✅ Order {order['order_code']} completed - sent {len(stocks)} products to user {order['user_id']}")
@@ -1333,13 +1383,18 @@ def get_products_keyboard(category_id: int):
     products = get_products(category_id=category_id)
     buttons = []
     for p in products:
-        stock = p.get('stock_count', 0)
-        status = f"✅ {stock}" if stock > 0 else "❌ Hết"
-        buttons.append([InlineKeyboardButton(
-            text=f"{p['name']} - {p['price']:,}đ [{status}]",
-            callback_data=f"prod_{p['id']}"
-        )])
-    # Thêm nút Làm mới và Quay lại
+        if p.get('contact_seller'):
+            buttons.append([InlineKeyboardButton(
+                text=f"{p['name']} - {p['price']:,}đ • Liên hệ",
+                callback_data=f"contact_prod_{p['id']}"
+            )])
+        else:
+            stock = p.get('stock_count', 0)
+            status = f"✅ {stock}" if stock > 0 else "❌ Hết"
+            buttons.append([InlineKeyboardButton(
+                text=f"{p['name']} - {p['price']:,}đ [{status}]",
+                callback_data=f"prod_{p['id']}"
+            )])
     buttons.append([
         InlineKeyboardButton(text="🔄 Làm mới", callback_data=f"refresh_cat_{category_id}"),
         InlineKeyboardButton(text="🔙 Quay lại", callback_data="shop")
@@ -1351,13 +1406,18 @@ def get_products_keyboard_all():
     products = get_products()
     buttons = []
     for p in products:
-        stock = p.get('stock_count', 0)
-        status = f"✅ {stock}" if stock > 0 else "❌ Hết"
-        buttons.append([InlineKeyboardButton(
-            text=f"{p['name']} - {p['price']:,}đ [{status}]",
-            callback_data=f"prod_{p['id']}"
-        )])
-    # Thêm nút Làm mới và Lịch sử
+        if p.get('contact_seller'):
+            buttons.append([InlineKeyboardButton(
+                text=f"{p['name']} - {p['price']:,}đ • Liên hệ",
+                callback_data=f"contact_prod_{p['id']}"
+            )])
+        else:
+            stock = p.get('stock_count', 0)
+            status = f"✅ {stock}" if stock > 0 else "❌ Hết"
+            buttons.append([InlineKeyboardButton(
+                text=f"{p['name']} - {p['price']:,}đ [{status}]",
+                callback_data=f"prod_{p['id']}"
+            )])
     buttons.append([
         InlineKeyboardButton(text="🔄 Làm mới", callback_data="shop"),
         InlineKeyboardButton(text="📋 Lịch sử", callback_data="my_orders")
@@ -1725,6 +1785,57 @@ async def callback_refresh_category(callback: types.CallbackQuery):
     except:
         pass
 
+def _telegram_contact_display():
+    """Lấy link và tên hiển thị Telegram từ TELEGRAM_CHANNEL (mặc định liên hệ người bán)"""
+    raw = get_config('telegram_channel', os.getenv('TELEGRAM_CHANNEL', ''))
+    if not raw:
+        return '', 'N/A'
+    raw = raw.strip()
+    if '/t.me/' in raw or 't.me/' in raw:
+        part = raw.split('t.me/')[-1].split('?')[0].strip('/')
+        if part:
+            display = '@' + part if not part.startswith('@') else part
+            return raw, display
+    return raw, raw if raw.startswith('@') else ('@' + raw)
+
+def build_contact_seller_message(product: dict):
+    """Tạo nội dung tin nhắn + keyboard cho sản phẩm loại Liên hệ người bán"""
+    telegram_url, telegram_display = _telegram_contact_display()
+    zalo_link = get_config('zalo_link', os.getenv('ZALO_LINK', ''))
+    desc = (product.get('description') or '').strip()
+    text = (
+        f"↑ <b>{product['name']}</b>\n\n"
+        f"💰 Giá: {product['price']:,}₫\n"
+    )
+    if desc:
+        text += f"📝 {desc}\n\n"
+    text += (
+        "📞 <b>Liên hệ để mua hàng</b>\n\n"
+        f"💬 Telegram: {telegram_display}\n"
+    )
+    if zalo_link:
+        text += f"📱 Zalo: <a href=\"{zalo_link}\">Nhấn vào đây</a>\n\n"
+    text += "Vui lòng liên hệ trực tiếp để được hỗ trợ!"
+    buttons = []
+    if telegram_url:
+        buttons.append([InlineKeyboardButton(text=f"📞 Liên hệ: {telegram_display}", url=telegram_url)])
+    buttons.append([InlineKeyboardButton(text="⬅️ BACK Quay lại danh sách", callback_data="shop")])
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+@dp.callback_query(F.data.startswith("contact_prod_"))
+async def callback_contact_product(callback: types.CallbackQuery):
+    """Sản phẩm loại Liên hệ người bán: chỉ hiển thị thông tin + nút liên hệ"""
+    await callback.answer()
+    product_id = int(callback.data.replace("contact_prod_", ""))
+    product = get_product(product_id)
+    if not product or not product.get('contact_seller'):
+        return
+    text, kb = build_contact_seller_message(product)
+    try:
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
 @dp.callback_query(F.data.startswith("prod_"))
 async def callback_product(callback: types.CallbackQuery):
     """Chọn sản phẩm -> Yêu cầu nhập số lượng"""
@@ -1733,6 +1844,14 @@ async def callback_product(callback: types.CallbackQuery):
     product = get_product(product_id)
     
     if not product:
+        return
+    
+    if product.get('contact_seller'):
+        text, kb = build_contact_seller_message(product)
+        try:
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        except Exception:
+            await callback.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         return
     
     stock_count = product.get('stock_count', 0)
@@ -2152,6 +2271,7 @@ class ProductCreate(BaseModel):
     name: str
     price: int
     description: str = ""
+    contact_seller: bool = False
 
 class StockCreate(BaseModel):
     product_id: int
@@ -2515,7 +2635,7 @@ async def api_get_products(request: Request, category_id: str = "", auth: bool =
 @app.post("/api/admin/products")
 async def api_create_product(data: ProductCreate, request: Request, auth: bool = Depends(require_admin)):
     try:
-        prod_id = create_product(data.category_id, data.name, data.price, data.description)
+        prod_id = create_product(data.category_id, data.name, data.price, data.description, data.contact_seller)
         return {"success": True, "id": prod_id}
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -2537,7 +2657,8 @@ async def api_update_product(product_id: int, data: ProductCreate, request: Requ
             category_id=data.category_id,
             name=data.name,
             price=data.price,
-            description=data.description
+            description=data.description,
+            contact_seller=data.contact_seller
         )
         return {"success": True}
     except Exception as e:

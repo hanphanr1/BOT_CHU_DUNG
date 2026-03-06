@@ -872,6 +872,14 @@
                         <label class="block text-gray-600 mb-2">Mô tả</label>
                         <textarea id="productDesc" placeholder="Mô tả sản phẩm..." class="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-primary" rows="3"></textarea>
                     </div>
+                    <div class="flex items-center justify-between py-2">
+                        <label class="text-gray-600">📞 Liên hệ người bán</label>
+                        <input type="checkbox" id="productContactSeller" class="w-5 h-5 rounded border-gray-300 text-primary focus:ring-primary">
+                    </div>
+                    <p class="text-sm text-gray-500 -mt-1">
+                        <i class="fas fa-info-circle mr-1"></i>
+                        Bật thì sản phẩm hiển thị "Liên hệ" (không cần kho hàng), địa chỉ lấy từ TELEGRAM_CHANNEL
+                    </p>
                     <button type="submit" class="w-full bg-gradient-to-r from-primary to-secondary text-white py-3 rounded-xl hover:opacity-90 transition">
                         <i class="fas fa-plus mr-2"></i>Thêm sản phẩm
                     </button>
@@ -1194,7 +1202,7 @@
                             </div>
                             <p class="text-gray-600 text-sm mb-4">${p.description || 'Không có mô tả'}</p>
                             <div class="flex items-center justify-between mb-4">
-                                <span class="text-sm text-gray-500"><i class="fas fa-box mr-1"></i>${p.stock_count || 0} trong kho</span>
+                                <span class="text-sm text-gray-500">${p.contact_seller ? '<i class="fas fa-phone mr-1"></i>Liên hệ người bán' : '<i class="fas fa-box mr-1"></i>' + (p.stock_count || 0) + ' trong kho'}</span>
                                 <span class="px-2 py-1 rounded-full text-xs ${p.is_active ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-600'}">
                                     ${p.is_active ? 'Đang bán' : 'Tạm dừng'}
                                 </span>
@@ -1233,7 +1241,8 @@
                 category_id: document.getElementById('productCategory').value,
                 name: document.getElementById('productName').value,
                 price: parseInt(document.getElementById('productPrice').value),
-                description: document.getElementById('productDesc').value
+                description: document.getElementById('productDesc').value,
+                contact_seller: document.getElementById('productContactSeller').checked
             };
             
             const result = await apiCall('/products', 'POST', data);
@@ -1256,6 +1265,7 @@
                 document.getElementById('productName').value = product.name || '';
                 document.getElementById('productPrice').value = product.price || '';
                 document.getElementById('productDesc').value = product.description || '';
+                document.getElementById('productContactSeller').checked = !!(product.contact_seller);
                 
                 // Change form to edit mode
                 const form = document.querySelector('#addProductModal form');
@@ -1265,7 +1275,8 @@
                         category_id: parseInt(document.getElementById('productCategory').value),
                         name: document.getElementById('productName').value,
                         price: parseInt(document.getElementById('productPrice').value),
-                        description: document.getElementById('productDesc').value
+                        description: document.getElementById('productDesc').value,
+                        contact_seller: document.getElementById('productContactSeller').checked
                     };
                     const result = await apiCall(`/products/${id}`, 'PUT', data);
                     if (result && result.success) {
