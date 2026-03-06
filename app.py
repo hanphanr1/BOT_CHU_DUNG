@@ -77,10 +77,24 @@ auto_check_task = None
 order_timeout_task = None
 
 # ================= DATABASE =================
+def _ensure_contact_seller_column(db):
+    """Thêm cột contact_seller vào bảng products nếu DB cũ chưa có (khi upload database cũ)."""
+    try:
+        cur = db.cursor()
+        cur.execute("PRAGMA table_info(products)")
+        cols = [row[1] for row in cur.fetchall()]
+        if cols and 'contact_seller' not in cols:
+            cur.execute("ALTER TABLE products ADD COLUMN contact_seller INTEGER DEFAULT 0")
+            db.commit()
+            logger.info("✅ Migration: added contact_seller column to products table")
+    except Exception as e:
+        logger.warning("Migration contact_seller: %s", e)
+
 @contextmanager
 def get_db():
     db = sqlite3.connect(DB_PATH, check_same_thread=False)
     db.row_factory = sqlite3.Row
+    _ensure_contact_seller_column(db)
     try:
         yield db
     finally:
