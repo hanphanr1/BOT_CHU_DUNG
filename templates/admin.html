@@ -835,6 +835,11 @@
                         <label class="block text-gray-600 mb-2">Icon (emoji)</label>
                         <input type="text" id="categoryIcon" placeholder="🎬" class="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-primary">
                     </div>
+                    <div>
+                        <label class="block text-gray-600 mb-2">Thứ tự hiển thị</label>
+                        <input type="number" id="categorySortOrder" placeholder="0" value="0" class="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-primary">
+                        <p class="text-xs text-gray-400 mt-1">Số nhỏ hiển thị trước</p>
+                    </div>
                     <button type="submit" class="w-full bg-gradient-to-r from-primary to-secondary text-white py-3 rounded-xl hover:opacity-90 transition">
                         <i class="fas fa-plus mr-2"></i>Thêm danh mục
                     </button>
@@ -875,6 +880,11 @@
                     <div class="flex items-center justify-between py-2">
                         <label class="text-gray-600">📞 Liên hệ người bán</label>
                         <input type="checkbox" id="productContactSeller" class="w-5 h-5 rounded border-gray-300 text-primary focus:ring-primary">
+                    </div>
+                    <div>
+                        <label class="block text-gray-600 mb-2">Thứ tự hiển thị</label>
+                        <input type="number" id="productSortOrder" placeholder="0" value="0" class="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-primary">
+                        <p class="text-xs text-gray-400 mt-1">Số nhỏ hiển thị trước</p>
                     </div>
                     <button type="submit" class="w-full bg-gradient-to-r from-primary to-secondary text-white py-3 rounded-xl hover:opacity-90 transition">
                         <i class="fas fa-plus mr-2"></i>Thêm sản phẩm
@@ -1077,12 +1087,13 @@
                     grid.innerHTML = '<p class="text-gray-400 col-span-3 text-center py-8">Chưa có danh mục nào</p>';
                 } else {
                     grid.innerHTML = categories.map(cat => `
-                        <div class="bg-white rounded-2xl shadow-lg p-6 card-hover">
+                        <div class="bg-white rounded-2xl shadow-lg p-6 card-hover cursor-move category-card" draggable="true" data-id="${cat.id}" data-sort-order="${cat.sort_order || 0}">
                             <div class="flex items-center gap-4 mb-4">
                                 <span class="text-4xl">${cat.icon || '📦'}</span>
                                 <div>
                                     <h4 class="font-bold text-lg">${cat.name}</h4>
                                     <p class="text-sm text-gray-500">${cat.product_count || 0} sản phẩm</p>
+                                    <span class="text-xs text-gray-400">Thứ tự: ${cat.sort_order || 0}</span>
                                 </div>
                             </div>
                             <p class="text-gray-600 text-sm mb-4">${cat.description || 'Không có mô tả'}</p>
@@ -1096,8 +1107,105 @@
                             </div>
                         </div>
                     `).join('');
+                    initCategoryDragAndDrop();
                 }
             }
+        }
+
+        // Category drag and drop
+        // Category Drag and Drop - improved
+        function initCategoryDragAndDrop() {
+            const grid = document.getElementById('categoriesGrid');
+            if (!grid) return;
+
+            let draggedItem = null;
+
+            grid.querySelectorAll('.category-card').forEach(card => {
+                card.draggable = true;
+
+                card.addEventListener('dragstart', function(e) {
+                    draggedItem = this;
+                    setTimeout(() => {
+                        this.classList.add('opacity-50');
+                    }, 0);
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', this.dataset.id);
+                });
+
+                card.addEventListener('dragend', function(e) {
+                    this.classList.remove('opacity-50');
+                    grid.querySelectorAll('.category-card').forEach(c => c.classList.remove('drag-over'));
+                    draggedItem = null;
+                });
+
+                card.addEventListener('dragover', function(e) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                });
+
+                card.addEventListener('dragenter', function(e) {
+                    e.preventDefault();
+                    if (this !== draggedItem) {
+                        this.classList.add('drag-over');
+                    }
+                });
+
+                card.addEventListener('dragleave', function(e) {
+                    if (!this.contains(e.relatedTarget)) {
+                        this.classList.remove('drag-over');
+                    }
+                });
+
+                card.addEventListener('drop', function(e) {
+                    e.preventDefault();
+                    this.classList.remove('drag-over');
+
+                    if (draggedItem && this !== draggedItem) {
+                        const allCards = [...grid.children];
+                        const fromIndex = allCards.indexOf(draggedItem);
+                        const toIndex = allCards.indexOf(this);
+
+                        if (fromIndex !== -1 && toIndex !== -1) {
+                            if (fromIndex < toIndex) {
+                                this.parentNode.insertBefore(draggedItem, this.nextSibling);
+                            } else {
+                                this.parentNode.insertBefore(draggedItem, this);
+                            }
+                            saveCategoryOrder();
+                        }
+                    }
+                });
+            });
+        }
+
+        let categorySaveTimeout = null;
+        async function saveCategoryOrder() {
+            clearTimeout(categorySaveTimeout);
+            categorySaveTimeout = setTimeout(async () => {
+                const cards = document.querySelectorAll('.category-card');
+                const categories = [];
+                cards.forEach((card, index) => {
+                    categories.push({
+                        id: parseInt(card.dataset.id),
+                        sort_order: index
+                    });
+                });
+
+                try {
+                    const response = await fetch(API_BASE + '/categories/reorder', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ categories: categories })
+                    });
+                    const result = await response.json();
+                    if (result && result.success) {
+                        console.log('Đã cập nhật thứ tự danh mục!');
+                        loadCategories();
+                    }
+                } catch (err) {
+                    console.error('Lỗi khi lưu thứ tự danh mục:', err);
+                }
+            }, 300);
         }
 
         async function loadCategoryOptions(selectId) {
@@ -1116,9 +1224,10 @@
             const data = {
                 name: document.getElementById('categoryName').value,
                 description: document.getElementById('categoryDesc').value,
-                icon: document.getElementById('categoryIcon').value || '📦'
+                icon: document.getElementById('categoryIcon').value || '📦',
+                sort_order: parseInt(document.getElementById('categorySortOrder').value) || 0
             };
-            
+
             const result = await apiCall('/categories', 'POST', data);
             if (result && result.success) {
                 showToast('Đã thêm danh mục!');
@@ -1127,6 +1236,7 @@
                 document.getElementById('categoryName').value = '';
                 document.getElementById('categoryDesc').value = '';
                 document.getElementById('categoryIcon').value = '';
+                document.getElementById('categorySortOrder').value = '0';
             } else {
                 showToast(result?.message || 'Lỗi!', true);
             }
@@ -1138,7 +1248,8 @@
                 document.getElementById('categoryName').value = cat.name || '';
                 document.getElementById('categoryDesc').value = cat.description || '';
                 document.getElementById('categoryIcon').value = cat.icon || '📦';
-                
+                document.getElementById('categorySortOrder').value = cat.sort_order || 0;
+
                 // Change form to edit mode
                 const form = document.querySelector('#addCategoryModal form');
                 form.onsubmit = async (e) => {
@@ -1146,7 +1257,8 @@
                     const data = {
                         name: document.getElementById('categoryName').value,
                         description: document.getElementById('categoryDesc').value,
-                        icon: document.getElementById('categoryIcon').value || '📦'
+                        icon: document.getElementById('categoryIcon').value || '📦',
+                        sort_order: parseInt(document.getElementById('categorySortOrder').value) || 0
                     };
                     const result = await apiCall(`/categories/${id}`, 'PUT', data);
                     if (result && result.success) {
@@ -1155,6 +1267,7 @@
                         loadCategories();
                         // Reset form
                         form.onsubmit = addCategory;
+                        document.getElementById('categorySortOrder').value = '0';
                     } else {
                         showToast(result?.message || 'Lỗi!', true);
                     }
@@ -1165,11 +1278,13 @@
         }
 
         async function deleteCategory(id) {
-            if (confirm('Xác nhận xóa danh mục này?')) {
+            if (confirm('⚠️ XÁC NHẬN XÓA VĨNH VIỄN?\n\nTất cả sản phẩm trong danh mục cũng sẽ bị xóa!\nHành động này không thể hoàn tác.')) {
                 const result = await apiCall(`/categories/${id}`, 'DELETE');
                 if (result && result.success) {
-                    showToast('Đã xóa danh mục!');
+                    showToast('Đã xóa vĩnh viễn!');
                     loadCategories();
+                } else {
+                    showToast('Lỗi khi xóa!', true);
                 }
             }
         }
@@ -1178,21 +1293,22 @@
         async function loadProducts() {
             const categoryId = document.getElementById('filterCategory')?.value || '';
             const products = await apiCall(`/products?category_id=${categoryId}`);
-            
+
             // Also update filter dropdown
             await loadCategoryOptions('filterCategory');
-            
+
             if (products) {
                 const grid = document.getElementById('productsGrid');
                 if (products.length === 0) {
                     grid.innerHTML = '<p class="text-gray-400 col-span-3 text-center py-8">Chưa có sản phẩm nào</p>';
                 } else {
                     grid.innerHTML = products.map(p => `
-                        <div class="bg-white rounded-2xl shadow-lg p-6 card-hover">
+                        <div class="bg-white rounded-2xl shadow-lg p-6 card-hover cursor-move product-card" draggable="true" data-id="${p.id}" data-sort-order="${p.sort_order || 0}" data-category-id="${p.category_id || ''}">
                             <div class="flex justify-between items-start mb-4">
                                 <div>
                                     <span class="text-xs px-2 py-1 bg-indigo-100 text-indigo-600 rounded-full">${p.category_name || 'Chưa phân loại'}</span>
                                     <h4 class="font-bold text-lg mt-2">${p.name}</h4>
+                                    <span class="text-xs text-gray-400 sort-order-text">Thứ tự: ${p.sort_order || 0}</span>
                                 </div>
                                 <span class="text-xl font-bold text-green-600">${formatCurrency(p.price)}</span>
                             </div>
@@ -1216,8 +1332,96 @@
                             </div>
                         </div>
                     `).join('');
+                    initDragAndDrop();
                 }
             }
+        }
+
+        // Drag and Drop - simple and reliable version
+        function initDragAndDrop() {
+            const grid = document.getElementById('productsGrid');
+            if (!grid) return;
+
+            let draggedItem = null;
+
+            grid.querySelectorAll('.product-card').forEach(card => {
+                card.draggable = true;
+
+                card.addEventListener('dragstart', function(e) {
+                    draggedItem = this;
+                    this.classList.add('opacity-50');
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', this.dataset.id);
+                });
+
+                card.addEventListener('dragend', function(e) {
+                    this.classList.remove('opacity-50');
+                    grid.querySelectorAll('.product-card').forEach(c => c.classList.remove('drag-over'));
+                    draggedItem = null;
+                });
+
+                card.addEventListener('dragover', function(e) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                });
+
+                card.addEventListener('drop', function(e) {
+                    e.preventDefault();
+                    this.classList.remove('drag-over');
+
+                    if (draggedItem && this !== draggedItem) {
+                        // Lấy vị trí hiện tại của dragged và target
+                        const allCards = [...grid.children];
+                        const fromIndex = allCards.indexOf(draggedItem);
+                        const toIndex = allCards.indexOf(this);
+
+                        if (fromIndex !== -1 && toIndex !== -1 && fromIndex !== toIndex) {
+                            // Di chuyển card đến vị trí mới
+                            if (fromIndex < toIndex) {
+                                this.after(draggedItem);
+                            } else {
+                                this.before(draggedItem);
+                            }
+
+                            // Gọi API lưu order ngay
+                            saveProductOrder();
+                        }
+                    }
+                });
+            });
+        }
+
+        let saveTimeout = null;
+        async function saveProductOrder() {
+            // Debounce để tránh gọi API nhiều lần
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(async () => {
+                const cards = document.querySelectorAll('.product-card');
+                const products = [];
+                cards.forEach((card, index) => {
+                    products.push({
+                        id: parseInt(card.dataset.id),
+                        sort_order: index,
+                        category_id: parseInt(card.dataset.categoryId) || null
+                    });
+                });
+
+                try {
+                    const response = await fetch(API_BASE + '/products/reorder', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ products: products })
+                    });
+                    const result = await response.json();
+                    if (result && result.success) {
+                        console.log('Đã cập nhật thứ tự!');
+                        // Reload lại products để hiển thị đúng số thứ tự từ database
+                        loadProducts();
+                    }
+                } catch (err) {
+                    console.error('Lỗi khi lưu thứ tự:', err);
+                }
+            }, 300);
         }
 
         async function loadProductOptions(selectId) {
@@ -1242,9 +1446,10 @@
                 name: document.getElementById('productName').value,
                 price: parseInt(document.getElementById('productPrice').value),
                 description: document.getElementById('productDesc').value,
-                contact_seller: document.getElementById('productContactSeller').checked
+                contact_seller: document.getElementById('productContactSeller').checked,
+                sort_order: parseInt(document.getElementById('productSortOrder').value) || 0
             };
-            
+
             const result = await apiCall('/products', 'POST', data);
             if (result && result.success) {
                 showToast('Đã thêm sản phẩm!');
@@ -1260,13 +1465,14 @@
             if (product && !product.error) {
                 // Load categories first
                 await loadCategoryOptions('productCategory');
-                
+
                 document.getElementById('productCategory').value = product.category_id || '';
                 document.getElementById('productName').value = product.name || '';
                 document.getElementById('productPrice').value = product.price || '';
                 document.getElementById('productDesc').value = product.description || '';
                 document.getElementById('productContactSeller').checked = !!(product.contact_seller);
-                
+                document.getElementById('productSortOrder').value = product.sort_order || 0;
+
                 // Change form to edit mode
                 const form = document.querySelector('#addProductModal form');
                 form.onsubmit = async (e) => {
@@ -1276,7 +1482,8 @@
                         name: document.getElementById('productName').value,
                         price: parseInt(document.getElementById('productPrice').value),
                         description: document.getElementById('productDesc').value,
-                        contact_seller: document.getElementById('productContactSeller').checked
+                        contact_seller: document.getElementById('productContactSeller').checked,
+                        sort_order: parseInt(document.getElementById('productSortOrder').value) || 0
                     };
                     const result = await apiCall(`/products/${id}`, 'PUT', data);
                     if (result && result.success) {
@@ -1288,6 +1495,7 @@
                         document.getElementById('productName').value = '';
                         document.getElementById('productPrice').value = '';
                         document.getElementById('productDesc').value = '';
+                        document.getElementById('productSortOrder').value = '0';
                     } else {
                         showToast(result?.message || 'Lỗi!', true);
                     }
@@ -1306,11 +1514,13 @@
         }
 
         async function deleteProduct(id) {
-            if (confirm('Xác nhận xóa sản phẩm này?')) {
+            if (confirm('⚠️ XÁC NHẬN XÓA VĨNH VIỄN?\n\nSản phẩm sẽ bị xóa khỏi database!\nHành động này không thể hoàn tác.')) {
                 const result = await apiCall(`/products/${id}`, 'DELETE');
                 if (result && result.success) {
-                    showToast('Đã xóa sản phẩm!');
+                    showToast('Đã xóa vĩnh viễn!');
                     loadProducts();
+                } else {
+                    showToast('Lỗi khi xóa!', true);
                 }
             }
         }

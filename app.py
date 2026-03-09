@@ -114,17 +114,73 @@ def get_db():
     finally:
         db.close()
 
-def init_db():
+def run_migrations():
+    """Chạy migration để thêm các cột mới vào database cũ"""
     with get_db() as db:
         cur = db.cursor()
-        
+
+        # Kiểm tra và lấy danh sách các bảng hiện có
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        existing_tables = [row[0] for row in cur.fetchall()]
+
+        # Migration cho categories
+        if 'categories' in existing_tables:
+            try:
+                cur.execute("ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0")
+                logger.info("✅ Migration: added sort_order column to categories table")
+            except Exception:
+                pass
+
+        # Migration cho products
+        if 'products' in existing_tables:
+            try:
+                cur.execute("ALTER TABLE products ADD COLUMN contact_seller INTEGER DEFAULT 0")
+                logger.info("✅ Migration: added contact_seller column to products table")
+            except Exception:
+                pass
+
+            try:
+                cur.execute("ALTER TABLE products ADD COLUMN sort_order INTEGER DEFAULT 0")
+                logger.info("✅ Migration: added sort_order column to products table")
+            except Exception:
+                pass
+
+        # Migration cho orders
+        if 'orders' in existing_tables:
+            try:
+                cur.execute("ALTER TABLE orders ADD COLUMN message_id INTEGER")
+                logger.info("✅ Migration: added message_id column to orders table")
+            except Exception:
+                pass
+
+            try:
+                cur.execute("ALTER TABLE orders ADD COLUMN customer_name TEXT")
+                logger.info("✅ Migration: added customer_name column to orders table")
+            except Exception:
+                pass
+
+            try:
+                cur.execute("ALTER TABLE orders ADD COLUMN quantity INTEGER DEFAULT 1")
+                logger.info("✅ Migration: added quantity column to orders table")
+            except Exception:
+                pass
+
+        db.commit()
+
+def init_db():
+    # Chạy migration trước
+    run_migrations()
+
+    with get_db() as db:
+        cur = db.cursor()
+
         cur.execute("""
         CREATE TABLE IF NOT EXISTS config (
             key TEXT PRIMARY KEY,
             value TEXT
         )
         """)
-        
+
         # Bảng lưu TẤT CẢ users đã /start bot
         cur.execute("""
         CREATE TABLE IF NOT EXISTS bot_users (
@@ -137,7 +193,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """)
-        
+
         cur.execute("""
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,10 +201,11 @@ def init_db():
             description TEXT,
             icon TEXT DEFAULT '📦',
             is_active INTEGER DEFAULT 1,
+            sort_order INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """)
-        
+
         cur.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,16 +215,12 @@ def init_db():
             price INTEGER NOT NULL,
             is_active INTEGER DEFAULT 1,
             contact_seller INTEGER DEFAULT 0,
+            sort_order INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (category_id) REFERENCES categories(id)
         )
         """)
-        try:
-            cur.execute("ALTER TABLE products ADD COLUMN contact_seller INTEGER DEFAULT 0")
-            logger.info("✅ Added contact_seller column to products table")
-        except Exception:
-            pass
-        
+
         cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -327,15 +380,76 @@ def set_config(key: str, value: str):
         db.commit()
 
 # ================= CATEGORY FUNCTIONS =================
+def ensure_columns():
+    """Đảm bảo các cột cần thiết tồn tại trong database"""
+    with get_db() as db:
+        cur = db.cursor()
+        try:
+            cur.execute("ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0")
+        except:
+            pass
+        try:
+            cur.execute("ALTER TABLE products ADD COLUMN contact_seller INTEGER DEFAULT 0")
+        except:
+            pass
+        try:
+            cur.execute("ALTER TABLE products ADD COLUMN sort_order INTEGER DEFAULT 0")
+        except:
+            pass
+        try:
+            cur.execute("ALTER TABLE orders ADD COLUMN message_id INTEGER")
+        except:
+            pass
+        try:
+            cur.execute("ALTER TABLE orders ADD COLUMN customer_name TEXT")
+        except:
+            pass
+        try:
+            cur.execute("ALTER TABLE orders ADD COLUMN quantity INTEGER DEFAULT 1")
+        except:
+            pass
+        db.commit()
+
+def auto_generate_sort_order():
+    """Tự động gán sort_order khi restore database"""
+    with get_db() as db:
+        cur = db.cursor()
+
+        # Categories: sort_order = 0,1,2,3...
+        cur.execute("SELECT id FROM categories WHERE is_active = 1 ORDER BY id")
+        categories = cur.fetchall()
+        for idx, cat in enumerate(categories):
+            cur.execute("UPDATE categories SET sort_order = ? WHERE id = ?", (idx, cat[0]))
+
+        # Products: mỗi category có sort_order riêng 0,1,2,3...
+        cur.execute("SELECT id, category_id FROM products ORDER BY category_id, id")
+        products = cur.fetchall()
+
+        current_category = None
+        order_in_category = 0
+        for product in products:
+            product_id, category_id = product
+            if category_id != current_category:
+                current_category = category_id
+                order_in_category = 0
+            
+            # Chỉ dùng index đơn giản trong category
+            cur.execute("UPDATE products SET sort_order = ? WHERE id = ?", (order_in_category, product_id))
+            order_in_category += 1
+
+        db.commit()
+        logger.info("✅ Auto-generated sort_order")
+
 def get_categories():
+    ensure_columns()  # Đảm bảo cột tồn tại
     with get_db() as db:
         cur = db.cursor()
         cur.execute("""
-            SELECT c.*, 
+            SELECT c.*,
                    (SELECT COUNT(*) FROM products WHERE category_id = c.id AND is_active = 1) as product_count
-            FROM categories c 
-            WHERE c.is_active = 1 
-            ORDER BY c.name
+            FROM categories c
+            WHERE c.is_active = 1
+            ORDER BY c.sort_order, c.name
         """)
         return [dict(row) for row in cur.fetchall()]
 
@@ -346,34 +460,77 @@ def get_category(category_id: int):
         row = cur.fetchone()
         return dict(row) if row else None
 
-def create_category(name: str, description: str = "", icon: str = "📦"):
+def create_category(name: str, description: str = "", icon: str = "📦", sort_order: int = 0):
     with get_db() as db:
         cur = db.cursor()
         cur.execute(
-            "INSERT INTO categories (name, description, icon) VALUES (?, ?, ?)",
-            (name, description, icon)
+            "INSERT INTO categories (name, description, icon, sort_order) VALUES (?, ?, ?, ?)",
+            (name, description, icon, sort_order)
         )
         db.commit()
         return cur.lastrowid
 
-def update_category(category_id: int, name: str, description: str, icon: str):
+def update_category(category_id: int, name: str, description: str, icon: str, sort_order: int = None):
     """Cập nhật category"""
     with get_db() as db:
         cur = db.cursor()
+        updates = ["name=?", "description=?", "icon=?"]
+        params = [name, description, icon]
+
+        # Lấy sort_order hiện tại
+        cur.execute("SELECT sort_order FROM categories WHERE id = ?", (category_id,))
+        row = cur.fetchone()
+        old_sort_order = row[0] if row else 0
+
+        if sort_order is not None:
+            # Khi thay đổi sort_order thủ công, cần tính lại vị trí
+            updates.append("sort_order=?")
+            params.append(sort_order)
+
+            # Lấy danh sách categories, sắp xếp theo sort_order
+            cur.execute("""
+                SELECT id, sort_order FROM categories 
+                WHERE id != ?
+                ORDER BY sort_order, id
+            """, (category_id,))
+            categories = cur.fetchall()
+
+            # Chèn category này vào đúng vị trí
+            new_order_list = []
+            inserted = False
+            for c in categories:
+                if not inserted and (sort_order < c[1] or (sort_order == c[1] and category_id < c[0])):
+                    new_order_list.append(category_id)
+                    inserted = True
+                new_order_list.append(c[0])
+            if not inserted:
+                new_order_list.append(category_id)
+
+            # Cập nhật lại sort_order cho tất cả
+            for idx, cid in enumerate(new_order_list):
+                cur.execute("UPDATE categories SET sort_order = ? WHERE id = ?", (idx, cid))
+
+        params.append(category_id)
         cur.execute(
-            "UPDATE categories SET name=?, description=?, icon=? WHERE id=?",
-            (name, description, icon, category_id)
+            f"UPDATE categories SET {', '.join(updates)} WHERE id=?",
+            params
         )
         db.commit()
 
 def delete_category(category_id: int):
+    """Xóa vĩnh viễn danh mục khỏi database"""
     with get_db() as db:
         cur = db.cursor()
-        cur.execute("UPDATE categories SET is_active=0 WHERE id=?", (category_id,))
+        # Xóa các sản phẩm trong danh mục trước
+        cur.execute("DELETE FROM stocks WHERE product_id IN (SELECT id FROM products WHERE category_id=?)", (category_id,))
+        cur.execute("DELETE FROM products WHERE category_id=?", (category_id,))
+        # Xóa danh mục
+        cur.execute("DELETE FROM categories WHERE id=?", (category_id,))
         db.commit()
 
 # ================= PRODUCT FUNCTIONS =================
 def get_products(category_id: int = None, active_only: bool = True):
+    ensure_columns()  # Đảm bảo cột tồn tại
     with get_db() as db:
         cur = db.cursor()
         query = """
@@ -391,7 +548,7 @@ def get_products(category_id: int = None, active_only: bool = True):
             query += " AND p.category_id = ?"
             params.append(category_id)
         
-        query += " ORDER BY c.name, p.name"
+        query += " ORDER BY c.sort_order, p.sort_order, c.name, p.name"
         cur.execute(query, params)
         return [dict(row) for row in cur.fetchall()]
 
@@ -408,23 +565,31 @@ def get_product(product_id: int):
         row = cur.fetchone()
         return dict(row) if row else None
 
-def create_product(category_id: int, name: str, price: int, description: str = "", contact_seller: bool = False):
+def create_product(category_id: int, name: str, price: int, description: str = "", contact_seller: bool = False, sort_order: int = 0):
     with get_db() as db:
         cur = db.cursor()
         cur.execute(
-            "INSERT INTO products (category_id, name, price, description, contact_seller) VALUES (?, ?, ?, ?, ?)",
-            (category_id, name, price, description, 1 if contact_seller else 0)
+            "INSERT INTO products (category_id, name, price, description, contact_seller, sort_order) VALUES (?, ?, ?, ?, ?, ?)",
+            (category_id, name, price, description, 1 if contact_seller else 0, sort_order)
         )
         db.commit()
         return cur.lastrowid
 
-def update_product(product_id: int, category_id: int = None, name: str = None, price: int = None, description: str = None, contact_seller: bool = None):
+def update_product(product_id: int, category_id: int = None, name: str = None, price: int = None, description: str = None, contact_seller: bool = None, sort_order: int = None):
     """Cập nhật thông tin sản phẩm"""
     with get_db() as db:
         cur = db.cursor()
         updates = []
         params = []
-        
+
+        # Lấy category_id hiện tại của sản phẩm
+        cur.execute("SELECT category_id, sort_order FROM products WHERE id = ?", (product_id,))
+        row = cur.fetchone()
+        old_category_id = row[0] if row else None
+        old_sort_order = row[1] if row else 0
+
+        new_category_id = category_id if category_id is not None else old_category_id
+
         if category_id is not None:
             updates.append("category_id=?")
             params.append(category_id)
@@ -440,7 +605,34 @@ def update_product(product_id: int, category_id: int = None, name: str = None, p
         if contact_seller is not None:
             updates.append("contact_seller=?")
             params.append(1 if contact_seller else 0)
-        
+        if sort_order is not None:
+            # Khi thay đổi sort_order thủ công, cần tính lại vị trí
+            updates.append("sort_order=?")
+            params.append(sort_order)
+
+            # Lấy danh sách sản phẩm trong category mới, sắp xếp theo sort_order
+            cur.execute("""
+                SELECT id, sort_order FROM products 
+                WHERE category_id = ? AND id != ?
+                ORDER BY sort_order, id
+            """, (new_category_id, product_id))
+            products = cur.fetchall()
+
+            # Chèn sản phẩm này vào đúng vị trí
+            new_order_list = []
+            inserted = False
+            for p in products:
+                if not inserted and (sort_order < p[1] or (sort_order == p[1] and product_id < p[0])):
+                    new_order_list.append(product_id)
+                    inserted = True
+                new_order_list.append(p[0])
+            if not inserted:
+                new_order_list.append(product_id)
+
+            # Cập nhật lại sort_order cho tất cả
+            for idx, pid in enumerate(new_order_list):
+                cur.execute("UPDATE products SET sort_order = ? WHERE id = ?", (idx, pid))
+
         if updates:
             params.append(product_id)
             query = f"UPDATE products SET {', '.join(updates)} WHERE id=?"
@@ -448,12 +640,17 @@ def update_product(product_id: int, category_id: int = None, name: str = None, p
             db.commit()
 
 def delete_product(product_id: int):
+    """Xóa vĩnh viễn sản phẩm khỏi database"""
     with get_db() as db:
         cur = db.cursor()
-        cur.execute("UPDATE products SET is_active=0 WHERE id=?", (product_id,))
+        # Xóa các stock liên quan trước
+        cur.execute("DELETE FROM stocks WHERE product_id=?", (product_id,))
+        # Xóa sản phẩm
+        cur.execute("DELETE FROM products WHERE id=?", (product_id,))
         db.commit()
 
 def toggle_product(product_id: int):
+    """Tạm dừng/bật lại sản phẩm"""
     with get_db() as db:
         cur = db.cursor()
         cur.execute("UPDATE products SET is_active = NOT is_active WHERE id=?", (product_id,))
@@ -2302,6 +2499,7 @@ class CategoryCreate(BaseModel):
     name: str
     description: str = ""
     icon: str = "📦"
+    sort_order: int = 0
 
 class ProductCreate(BaseModel):
     category_id: int
@@ -2309,6 +2507,7 @@ class ProductCreate(BaseModel):
     price: int
     description: str = ""
     contact_seller: bool = False
+    sort_order: int = 0
 
 class StockCreate(BaseModel):
     product_id: int
@@ -2483,7 +2682,11 @@ async def api_restore_database(request: Request, auth: bool = Depends(require_ad
         # Write new database
         with open(DB_PATH, 'wb') as f:
             f.write(contents)
-        
+
+        # Run migrations and auto-generate sort_order
+        run_migrations()
+        auto_generate_sort_order()
+
         logger.info("Database restored successfully")
         return {"success": True, "message": "Database restored successfully. Please restart the bot."}
         
@@ -2637,7 +2840,7 @@ async def api_get_categories(request: Request, auth: bool = Depends(require_admi
 @app.post("/api/admin/categories")
 async def api_create_category(data: CategoryCreate, request: Request, auth: bool = Depends(require_admin)):
     try:
-        cat_id = create_category(data.name, data.description, data.icon)
+        cat_id = create_category(data.name, data.description, data.icon, data.sort_order)
         return {"success": True, "id": cat_id}
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -2654,7 +2857,7 @@ async def api_get_category(category_id: int, request: Request, auth: bool = Depe
 async def api_update_category(category_id: int, data: CategoryCreate, request: Request, auth: bool = Depends(require_admin)):
     """Cập nhật category"""
     try:
-        update_category(category_id, data.name, data.description, data.icon)
+        update_category(category_id, data.name, data.description, data.icon, data.sort_order)
         return {"success": True}
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -2664,6 +2867,29 @@ async def api_delete_category(category_id: int, request: Request, auth: bool = D
     delete_category(category_id)
     return {"success": True}
 
+@app.post("/api/admin/categories/reorder")
+async def api_reorder_categories(data: dict, request: Request, auth: bool = Depends(require_admin)):
+    """Cập nhật thứ tự danh mục - dùng số đơn giản 0,1,2,3..."""
+    try:
+        categories = data.get("categories", [])
+        if not categories:
+            return {"success": True}
+
+        with get_db() as db:
+            cur = db.cursor()
+
+            # Cập nhật sort_order = index
+            for idx, item in enumerate(categories):
+                cur.execute(
+                    "UPDATE categories SET sort_order = ? WHERE id = ?",
+                    (idx, item.get("id"))
+                )
+
+            db.commit()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
 @app.get("/api/admin/products")
 async def api_get_products(request: Request, category_id: str = "", auth: bool = Depends(require_admin)):
     cat_id = int(category_id) if category_id and category_id.isdigit() else None
@@ -2672,7 +2898,7 @@ async def api_get_products(request: Request, category_id: str = "", auth: bool =
 @app.post("/api/admin/products")
 async def api_create_product(data: ProductCreate, request: Request, auth: bool = Depends(require_admin)):
     try:
-        prod_id = create_product(data.category_id, data.name, data.price, data.description, data.contact_seller)
+        prod_id = create_product(data.category_id, data.name, data.price, data.description, data.contact_seller, data.sort_order)
         return {"success": True, "id": prod_id}
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -2695,7 +2921,8 @@ async def api_update_product(product_id: int, data: ProductCreate, request: Requ
             name=data.name,
             price=data.price,
             description=data.description,
-            contact_seller=data.contact_seller
+            contact_seller=data.contact_seller,
+            sort_order=data.sort_order
         )
         return {"success": True}
     except Exception as e:
@@ -2705,6 +2932,46 @@ async def api_update_product(product_id: int, data: ProductCreate, request: Requ
 async def api_toggle_product(product_id: int, request: Request, auth: bool = Depends(require_admin)):
     toggle_product(product_id)
     return {"success": True}
+
+@app.post("/api/admin/products/reorder")
+async def api_reorder_products(data: dict, request: Request, auth: bool = Depends(require_admin)):
+    """Cập nhật thứ tự sản phẩm - tính index riêng cho mỗi category"""
+    try:
+        products = data.get("products", [])
+        if not products:
+            return {"success": True}
+
+        with get_db() as db:
+            cur = db.cursor()
+
+            # Lấy category_id của từng product từ database
+            product_ids = [p.get("id") for p in products]
+            if not product_ids:
+                return {"success": True}
+                
+            placeholders = ','.join('?' * len(product_ids))
+            cur.execute(f"SELECT id, category_id FROM products WHERE id IN ({placeholders})", product_ids)
+            product_cat_map = {row[0]: row[1] for row in cur.fetchall()}
+
+            # Nhóm products theo category_id từ database
+            # products gửi lên có thể trộn lẫn, cần tách ra
+            by_category = {}
+            for idx, item in enumerate(products):
+                product_id = item.get("id")
+                cat_id = product_cat_map.get(product_id)
+                if cat_id not in by_category:
+                    by_category[cat_id] = []
+                by_category[cat_id].append(product_id)
+
+            # Cập nhật sort_order = index trong category (0,1,2,3...)
+            for cat_id, prod_ids in by_category.items():
+                for idx, pid in enumerate(prod_ids):
+                    cur.execute("UPDATE products SET sort_order = ? WHERE id = ?", (idx, pid))
+
+            db.commit()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 @app.delete("/api/admin/products/{product_id}")
 async def api_delete_product(product_id: int, request: Request, auth: bool = Depends(require_admin)):
